@@ -1,0 +1,91 @@
+/*
+An alternative to PWM/PPM control of the VESC is UART. 
+This code covers control of UART via Arduino using the awesome VESCUART library by Solidgeek.
+This is not final but a work in progress.
+Created by: Mohammad from youtube.com/Fungineers for the DIY OneWheel Project
+*/
+
+#include "MPU9250.h"
+#include <VescUart.h>
+#include "datatypes.h"
+#include "buffer.h"
+#include "crc.h"
+
+/** Initiate VescUart class */
+VescUart UART;
+/** Initiate MPU class */
+MPU9250 mpu;
+int status;
+int16_t ax, ay, az; //acc readings
+int16_t gx, gy, gz; //gyro readings
+float duty;
+float current;
+bool rideron;
+double footpadV1 = analogRead(A2); //A2 and A7 pins are reading the voltage from the footpad voltage divider
+double footpadV2 = analogRead(A7);
+double roll  = -mpu.getRoll();
+//PID stuff
+double PID, Kp = 0.7 , Ki = 0, Kd = 0.00;
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  mpu.setup();
+  /** Setup UART port (Serial1 on Atmega324) */
+  Serial1.begin(15200);
+  while (!Serial1) {}
+  if (status < 0) {
+    Serial.println("IMU initialization unsuccessful");
+    Serial.println("Check IMU wiring or try cycling power");
+    Serial.print("Status: ");
+    Serial.println(status);
+    while (1) {}
+  }
+  UART.setSerialPort(&Serial1);//define which port to use as UART
+}
+
+void loop() {
+
+  static uint32_t prev_ms = millis();
+  mpu.update();
+  double roll  = -mpu.getRoll();
+  if (((millis() - prev_ms) > 10) && (footpadV2 > 120) && ((rideron == true) || (roll < 2 && roll > -2))) //10ms is the refresh time. 100hz.
+  {
+    mpu.update();
+    double roll  = mpu.getRoll();
+    Serial.print("roll "); Serial.println (roll);
+    gx = -(mpu.getGyro(1)/131.0); //get the change in rate of roll.
+    Serial.println("Gyro "); Serial.println (gx);
+    PID = Kp * (roll) + Kd * gx; //calculate PIDs
+    Serial.print("PID "); Serial.println (PID);
+    duty = mapf (PID, -12, 12, -1, 1.0); //mapping the angle from -12 to 12, to Duty cycle, i.e. -1 to 1 to send to vesc.
+    duty = constrain (duty, -1.0, 1.0);
+    Serial.print("duty "); Serial.println (duty);
+    /*******************************************Sending data to VESC***************************************/
+    //UART.setCurrent(duty); //sending current to VESC via UART.
+    UART.setDuty(duty); //sendign duty to VESC via UART
+    /*******************************************Receiving data to VESC***************************************/
+    Serial.print("rpm ");
+    Serial.print(UART.data.rpm);
+    Serial.println("Vin ");
+    Serial.print(UART.data.inpVoltage);
+    Serial.print("aH ");
+    Serial.println(UART.data.ampHours);
+    Serial.print("Tach ");
+    Serial.println(UART.data.tachometerAbs);
+    rideron = true; //rideron is set to true after the first start and remains true.
+    prev_ms = millis();
+  }
+  else
+  {
+    rideron = false;
+    UART.setDuty(0); //send zero throttle
+    //UART.setCurrent(0); //send zero throttle
+  }
+}
+/************************************mapf function (to map angle values to duty/current output values**********************************************/
+
+float mapf(double val, double in_min, double in_max, double out_min, double out_max)
+{
+  return (val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
